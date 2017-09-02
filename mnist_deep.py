@@ -28,6 +28,8 @@ from __future__ import print_function
 
 import argparse
 import sys, os
+import pandas as pd
+import time
 import tempfile
 from collections import defaultdict
 from functools import reduce
@@ -128,7 +130,7 @@ class deepnn(Network):
 
 def main():
   parser = argparse.ArgumentParser()
-  parser.add_argument('--data-path', default='/tmp/tensorflow/mnist/input_data',
+  parser.add_argument('--data-path', default='./tmp/',
                       type=str, help='Directory for storing input data')
   parser.add_argument('--result-path', default='result', type=str, 
                       help='Directory for storing training and eval logs')
@@ -136,8 +138,11 @@ def main():
                       help='use orthogonal convolution')
   parser.add_argument('--nonlin', choices=['relu', 'selu'], default='relu', 
                       type=str, help='nonlinearity to use (default %(default)s)')
+
   options = parser.parse_args()
   assert not(os.path.exists(options.result_path)), "result dir already exists!"
+  result_path = options.result_path
+  os.makedirs(result_path)
 
   mnist = input_data.read_data_sets(options.data_path, one_hot=True)
 
@@ -160,31 +165,31 @@ def main():
     sess.run(tf.global_variables_initializer())
     train_metrics = defaultdict(list)
     eval_metrics = defaultdict(list)
+    train_start_time = time.time()
     for i in range(1, 20001):
       batch = mnist.train.next_batch(50)
       _, train_cross_entropy, train_accuracy = sess.run([train_step, cross_entropy, accuracy], 
                                                 feed_dict={x: batch[0], y: batch[1]})
+      train_metrics['time_per_iter'].append((time.time() - train_start_time)/i)
       train_metrics['iteration'].append(i)
       train_metrics['cross_entropy'].append(train_cross_entropy)
       train_metrics['accuracy'].append(train_accuracy)
 
       if (i - 1) % 100 == 0:
+        eval_start_time = time.time()
         eval_cross_entropy, eval_accuracy = sess.run([cross_entropy, accuracy], 
                                               feed_dict={x: mnist.test.images, y: mnist.test.labels})
+        eval_metrics['time_per_iter'].append(time.time() - eval_start_time)
         eval_metrics['iteration'].append(i)
         eval_metrics['cross_entropy'].append(eval_cross_entropy)
         eval_metrics['accuracy'].append(eval_accuracy)
         print('step %d, eval accuracy %g' % (i, eval_accuracy))
 
+        pd_train_metrics = pd.DataFrame(train_metrics)
+        pd_eval_metrics = pd.DataFrame(eval_metrics)
 
-  pd_train_metrics = pd.DataFrame(train_metrics)
-  pd_eval_metrics = pd.DataFrame(eval_metrics)
-
-  result_path = options.result_path
-  os.makedirs(result_path)
-  pd_train_metrics.to_csv(os.path.join(result_path, 'train_metrics.csv'))
-  pd_eval_metrics.to_csv(os.path.join(result_path, 'eval_metrics.csv'))
-
+        pd_train_metrics.to_csv(os.path.join(result_path, 'train_metrics.csv'))
+        pd_eval_metrics.to_csv(os.path.join(result_path, 'eval_metrics.csv'))
 
 if __name__ == '__main__':
   main()
