@@ -1,5 +1,6 @@
 from vecgen_tf import orthoconv_filter
 from functools import reduce
+from operator import mul
 import tensorflow as tf
 
 class Network(object):
@@ -34,10 +35,15 @@ class Network(object):
     assert len(shape)==4
     [in_height, in_width, in_channels, out_channels] = shape
     weight, bias = orthoconv_filter(in_height, in_width, in_channels, out_channels, bias=True)
-    return weight, bias
+    scale_weight = tf.Variable(tf.constant(1., shape=weight.get_shape().as_list()))
+    scale_bias = tf.Variable(tf.constant(1., shape=bias.get_shape().as_list()))
+    return scale_weight*weight, scale_bias*bias
 
   def _weight_bias_variable(self, shape):
     """generates a weight and bias variable of a given shape."""
-    weight = tf.Variable(tf.truncated_normal(shape, stddev=0.1))
-    bias = tf.Variable(tf.constant(0.1, shape=[shape[-1]]))
+    fan_in = reduce(mul, shape[:-1])
+    fan_out = shape[-1]
+    limit = tf.sqrt(6./(fan_in + fan_out))
+    weight = tf.Variable(tf.random_uniform(shape, minval=-limit, maxval=limit))
+    bias = tf.Variable(tf.constant(0., shape=[shape[-1]]))
     return weight, bias

@@ -27,7 +27,9 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
+import pandas as pd
 import sys, os
+import time
 import tempfile
 from collections import defaultdict
 from network_base import Network
@@ -86,7 +88,7 @@ class deepnn(Network):
     logits = self._dense(h, W, b)
     return logits
 
-  def cross_entropy_and_accuracy(labels, logits):
+  def cross_entropy_and_accuracy(self, labels, logits):
     cross_entropy_vector = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
     cross_entropy = tf.reduce_mean(cross_entropy_vector)
 
@@ -106,68 +108,78 @@ def main():
                       help='use orthogonal convolution')
   parser.add_argument('--nonlin', choices=['relu', 'selu'], default='relu', 
                       type=str, help='nonlinearity to use (default %(default)s)')
+  parser.add_argument('--num-epochs', default=50, type=int, 
+                      help='number of epochs (default %(default)s)')
 
   options = parser.parse_args()
   if options.dataset=='cifar10':
+    (x_train, y_train), (x_test, y_test) = tf.contrib.keras.datasets.cifar10.load_data()
     num_classes = 10
   elif options.dataset=='cifar100':
+    (x_train, y_train), (x_test, y_test) = tf.contrib.keras.datasets.cifar100.load_data()
     num_classes = 100
+  else:
+    raise ValueError('Invalid dataset name')
+
+  x_train = x_train/255.
+  y_train = tf.contrib.keras.utils.to_categorical(y_train, num_classes)
+  x_test = x_test/255.
+  y_test = tf.contrib.keras.utils.to_categorical(y_test, num_classes)
+
   assert not(os.path.exists(options.result_path)), "result dir already exists!"
   result_path = options.result_path
 
   net = deepnn(ortho_conv=options.ortho_conv, nonlin=options.nonlin)
+  images = tf.placeholder(tf.float32, [None, 32, 32, 3])
+  labels = tf.placeholder(tf.float32, [None, num_classes])
 
-  train_images, train_labels = cifar_input.build_input(options.dataset, 128, 'train')
-  eval_images, eval_labels = cifar_input.build_input(options.dataset, 100, 'eval')
+  logits = net.forward(images, num_classes)
+  cross_entropy, accuracy = net.cross_entropy_and_accuracy(labels, logits)
 
-  with tf.variable_scope('network'):
-    train_logits = net.forward(train_images, num_classes)
-    train_cross_entropy, train_accuracy = net.cross_entropy_and_accuracy(train_labels, train_logits)
+  optimizer = tf.train.AdamOptimizer(learning_rate=3e-4)
+  train_step = optimizer.minimize(cross_entropy)
 
-  with tf.variable_scope('network', reuse=True):
-    eval_logits = net.forward(eval_images, num_classes)
-    eval_cross_entropy_vector = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
-
-  optimizer = tf.train.RMSPropOptimizer(learning_rate=1e-4)
-  train_step = optimizer.minimize(train_cross_entropy)
-
-  with tf.Session() as sess:
+  config = tf.ConfigProto()
+  config.gpu_options.allow_growth = True
+  with tf.Session(config=config) as sess:
     train_metrics = defaultdict(list)
     eval_metrics = defaultdict(list)
     os.makedirs(result_path)
+    models_path = os.path.join(result_path, 'models')
 
     sess.run(tf.global_variables_initializer())
-    for i in range(1, 20001):
-      _, train_cross_entropy, train_accuracy = sess.run([train_step, train_cross_entropy, train_accuracy])
-      train_metrics['iteration'].append(i)
-      train_metrics['cross_entropy'].append(train_cross_entropy)
-      train_metrics['accuracy'].append(train_accuracy)
+    train_start_time = time.time()
+    iters = 0
+    for i in range(options.num_epochs):
+      for j in range(0, len(x_train), 128):
+        iters = iters + 1
+        _, train_cross_entropy, train_accuracy = sess.run([train_step, cross_entropy, accuracy], 
+                                                   feed_dict={images:x_train[j:j+128], labels:y_train[j:j+128]})
+        train_metrics['time_per_iter'].append((time.time() - train_start_time)/iters)
+        train_metrics['iteration'].append(iters)
+        train_metrics['cross_entropy'].append(train_cross_entropy)
+        train_metrics['accuracy'].append(train_accuracy)
 
-      if (i - 1) % 100 == 0:
-        total_prediction, correct_prediction = 0, 0
-        total_eval_cross_entropy = 0
-        for _ in range(EVAL_BATCH_COUNT):
-          eval_cross_entropy_vector_val, eval_predictions_val, eval_truth_val = sess.run([eval_cross_entropy_vector, 
-                                                                                  eval_logits, eval_labels])
-          total_eval_cross_entropy += np.sum(eval_cross_entropy_vector_val)
-          truth = np.argmax(eval_truth_val, axis=1)
-          predictions = np.argmax(eval_predictions_val, axis=1)
-          correct_prediction += np.sum(truth == predictions)
-          total_prediction += predictions.shape[0]
-        eval_avg_precision = correct_prediction / float(total_prediction)
-        eval_avg_cross_entropy = total_eval_cross_entropy / float(EVAL_BATCH_COUNT)
+        if (iters-1) % 100 == 0:
+          eval_start_time = time.time()
+          eval_cross_entropy, eval_accuracy = sess.run([cross_entropy, accuracy], feed_dict={images:x_test, labels:y_test})
+          eval_metrics['time_per_iter'].append(time.time() - eval_start_time)
+          eval_metrics['iteration'].append(iters)
+          eval_metrics['cross_entropy'].append(eval_cross_entropy)
+          eval_metrics['accuracy'].append(eval_accuracy)
+          print('step %d, train accuracy %g, train loss %g' % (iters, train_accuracy, train_cross_entropy))
+          print('eval accuracy %g, eval loss %g' % (eval_accuracy, eval_cross_entropy))
 
-        eval_metrics['iteration'].append(i)
-        eval_metrics['cross_entropy'].append(eval_avg_cross_entropy)
-        eval_metrics['accuracy'].append(eval_avg_precision)
-        print('step %d, eval accuracy %g, eval loss' % (i, eval_accuracy, eval_cross_entropy))
+          saver = tf.train.Saver()
+          model_name = 'iter_{}'.format(iters)
+          model_filepath = os.path.join(models_path, model_name)
+          saver.save(sess, model_filepath, write_meta_graph=False, write_state=False)
 
-        pd_train_metrics = pd.DataFrame(train_metrics)
-        pd_eval_metrics = pd.DataFrame(eval_metrics)
+          pd_train_metrics = pd.DataFrame(train_metrics)
+          pd_eval_metrics = pd.DataFrame(eval_metrics)
 
-        pd_train_metrics.to_csv(os.path.join(result_path, 'train_metrics.csv'))
-        pd_eval_metrics.to_csv(os.path.join(result_path, 'eval_metrics.csv'))
-
+          pd_train_metrics.to_csv(os.path.join(result_path, 'train_metrics.csv'))
+          pd_eval_metrics.to_csv(os.path.join(result_path, 'eval_metrics.csv'))
 
 if __name__ == '__main__':
   main()
