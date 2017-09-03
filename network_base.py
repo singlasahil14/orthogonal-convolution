@@ -30,6 +30,20 @@ class Network(object):
     scale = 1.0507009873554804934193349852946
     return scale * tf.where(tf.less(x, 0.0), alpha * tf.nn.elu(x), x)
 
+  def _ortho_loss(self, weight, bias):
+    shape = weight.get_shape().as_list()
+    m = reduce(mul, shape[:-1])
+    n = shape[-1]
+    weight = tf.reshape(weight, shape=[m, n])
+    tensor_var = tf.concat([weight, bias], 0)
+    tensor_mul = tf.matmul(tf.transpose(tensor_var), tensor_var)
+    tensor_norm = tf.norm(tensor_var, axis=0)
+    tensor_norm_mul = tf.matmul(tf.expand_dims(tensor_norm, axis=1), tf.expand_dims(tensor_norm, axis=0))
+    cosine_tensor = tf.divide(tensor_mul, tensor_norm_mul)
+    cosine_tensor_sq = tf.square(cosine_tensor)
+    loss = tf.reduce_sum(cosine_tensor_sq) - tf.reduce_sum(tf.trace(cosine_tensor_sq))
+    return loss
+
   def _ortho_weight_bias_variable(self, shape):
     """generates an orthogonal weight and bias variable of a given shape."""
     assert len(shape)==4
@@ -41,9 +55,10 @@ class Network(object):
 
   def _weight_bias_variable(self, shape):
     """generates a weight and bias variable of a given shape."""
-    fan_in = reduce(mul, shape[:-1])
-    fan_out = shape[-1]
-    limit = tf.sqrt(6./(fan_in + fan_out))
-    weight = tf.Variable(tf.random_uniform(shape, minval=-limit, maxval=limit))
-    bias = tf.Variable(tf.constant(0., shape=[shape[-1]]))
+    m = reduce(mul, shape[:-1]) + 1
+    n = shape[-1]
+    limit = tf.sqrt(6./(m + n))
+    tensor_var = tf.Variable(tf.random_uniform([m, n], minval=-limit, maxval=limit))
+    weight, bias = tf.slice(tensor_var, [0, 0], [m-1, n]), tf.slice(tensor_var, [m-1, 0], [1, n])
+    weight = tf.reshape(weight, shape)
     return weight, bias
