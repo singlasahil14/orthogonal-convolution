@@ -33,7 +33,6 @@ import time
 import tempfile
 from collections import defaultdict
 from network_base import Network
-import cifar_input
 
 from tensorflow.examples.tutorials.mnist import input_data
 
